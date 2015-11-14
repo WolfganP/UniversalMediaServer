@@ -19,8 +19,22 @@
  */
 package net.pms.util;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import net.pms.Messages;
+import net.pms.configuration.PmsConfiguration;
 import org.apache.commons.lang.WordUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class is a utility class for translation between {@link java.util.Locale}'s
@@ -35,6 +49,7 @@ import org.apache.commons.lang.WordUtils;
 
 public final class Languages {
 
+	private static final Logger LOGGER = LoggerFactory.getLogger(Languages.class);
 	/**
 	 * If the below list is changed, methods {@link #localeToLanguageCode()} and
 	 * {@link #languageCodeToLanguageCode()} must be updated correspondingly.
@@ -63,7 +78,7 @@ public final class Languages {
 		"ja",      // Japanese
 		"ko",      // Korean
 		"no",      // Norwegian
-		"fa",      // Persian
+		"fa",      // Persian (Farsi)
 		"pl",      // Polish
 		"pt",      // Portuguese
 		"ro",      // Romanian, Moldavian, Moldovan
@@ -79,11 +94,37 @@ public final class Languages {
 	};
 
 	private final static String[] UMS_LANGUAGES = new String[UMS_BCP47_CODES.length];
+	/**
+	 * This map is also used as a synchronization object for {@link #translationsStatistics},
+	 * {@link #lastpreferredLocale} and {@link #sortedLanguages}
+	 */
+	private static HashMap<String, TranslationStatistics> translationsStatistics = new HashMap<>((int) Math.round(UMS_BCP47_CODES.length * 1.34));
+	private static Locale lastpreferredLocale = null;
+	private static List<LanguageEntry> sortedLanguages = new ArrayList<>();
 
 	static {
 		for (int i = 0; i < UMS_BCP47_CODES.length; i++) {
 			UMS_LANGUAGES[i] = WordUtils.capitalize(Locale.forLanguageTag(UMS_BCP47_CODES[i]).getDisplayName(Locale.getDefault()));
 		}
+	}
+
+	private static class TranslationStatistics {
+		public String name;
+		public int phrases;
+		public int phrasesApproved;
+		public int phrasesTranslated;
+		public int words;
+		public int wordsApproved;
+		public int wordsTranslated;
+		public int approved;
+		public int translated;
+	}
+
+	private static class LanguageEntry {
+		public String tag;
+		public String name;
+		public Locale locale = null;
+		public int coveragePercent;
 	}
 
 	private static String localeToLanguageCode(Locale locale) {
@@ -170,6 +211,104 @@ public final class Languages {
 				} else {
 					return languageCode.toLowerCase(Locale.US);
 				}
+		}
+	}
+
+	private static void populateTranslationsStatistics() {
+		if (translationsStatistics.size() < 1) {
+			try (BufferedReader reader = new BufferedReader(new InputStreamReader(Languages.class.getResourceAsStream("/resources/languages.properties"), StandardCharsets.UTF_8))) {
+				Pattern pattern = Pattern.compile("^\\s*(?!#)\\b([^\\.=][^=]+[^\\.=])=(.*[^\\s])\\s*$");
+				String line;
+				while ((line = reader.readLine()) != null) {
+					Matcher matcher = pattern.matcher(line);
+					if (matcher.find()) {
+						try {
+							String[] path = matcher.group(1).split("\\.");
+							TranslationStatistics translationStatistics;
+							if (translationsStatistics.containsKey(path[0])) {
+								translationStatistics = translationsStatistics.get(path[0]);
+							} else {
+								translationStatistics = new TranslationStatistics();
+								translationsStatistics.put(path[0], translationStatistics);
+							}
+							if (path.length < 2) {
+								LOGGER.debug("Failed to parse translation statistics line \"{}\": Illegal qualifier", line);
+							} else if (path[1].equalsIgnoreCase("name")) {
+								translationStatistics.name = matcher.group(2);
+							} else if (path[1].equalsIgnoreCase("phrases")) {
+								if (path.length < 3) {
+									translationStatistics.phrases = Integer.parseInt(matcher.group(2));
+								} else {
+									switch (path[2].toLowerCase(Locale.US)) {
+										case "approved":
+											translationStatistics.phrasesApproved = Integer.parseInt(matcher.group(2));
+											break;
+										case "translated":
+											translationStatistics.phrasesTranslated = Integer.parseInt(matcher.group(2));
+											break;
+										default:
+											LOGGER.debug("Failed to parse translation statistics line \"{}\": Illegal qualifier", line);
+									}
+								}
+							} else if (path[1].equalsIgnoreCase("words")) {
+								if (path.length < 3) {
+									translationStatistics.words = Integer.parseInt(matcher.group(2));
+								} else {
+									switch (path[2].toLowerCase(Locale.US)) {
+										case "approved":
+											translationStatistics.wordsApproved = Integer.parseInt(matcher.group(2));
+											break;
+										case "translated":
+											translationStatistics.wordsTranslated = Integer.parseInt(matcher.group(2));
+											break;
+										default:
+											LOGGER.debug("Failed to parse translation statistics line \"{}\": Illegal qualifier", line);
+									}
+								}
+							} else if (path[1].equalsIgnoreCase("progress")) {
+								if (path.length < 3) {
+									LOGGER.debug("Failed to parse translation statistics line \"{}\": Illegal qualifier", line);
+								} else {
+									switch (path[2].toLowerCase(Locale.US)) {
+										case "approved":
+											translationStatistics.approved = Integer.parseInt(matcher.group(2));
+											break;
+										case "translated":
+											translationStatistics.translated = Integer.parseInt(matcher.group(2));
+											break;
+										default:
+											LOGGER.debug("Failed to parse translation statistics line \"{}\": Illegal qualifier", line);
+									}
+								}
+							} else {
+								LOGGER.debug("Failed to parse translation statistics line \"{}\": Illegal qualifier", line);
+							}
+						} catch (NumberFormatException e) {
+							LOGGER.debug("Failed to parse translation statistics line \"{}\": ", line, e.getMessage());
+						}
+					}
+				}
+			} catch (IOException e) {
+				LOGGER.error("Error reading translations statistics: {}", e.getMessage());
+				LOGGER.trace("", e);
+				translationsStatistics.clear();
+			}
+		}
+	}
+
+	/**
+	 * Reads translations statistics from resource file <code>languages.properties</code>
+	 * and returns them in a {@link HashMap} with language tags as keys.
+	 * Results are cached for subsequent reads.
+	 * <p>
+	 * <strong>The returned {@link HashMap} is never <code>null</code> must
+	 * always be synchronized on itself during read or write</strong>
+	 * @return The resulting {@link HashMap}
+	 */
+	public static HashMap<String, TranslationStatistics> getTranslationsStatistics() {
+		synchronized (translationsStatistics) {
+			populateTranslationsStatistics();
+			return translationsStatistics;
 		}
 	}
 
@@ -273,6 +412,39 @@ public final class Languages {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * This method must be called in a context synchronized on {@link #translationsStatistics}.
+	 */
+	private static void createSortedList(Locale preferredLocale) {
+		if (preferredLocale == null) {
+			throw new IllegalArgumentException("preferredLocale cannot be null");
+		}
+		//TODO: move synch out
+		synchronized(translationsStatistics) {
+		if (lastpreferredLocale == null || !lastpreferredLocale.equals(preferredLocale)) {
+			lastpreferredLocale = (Locale) preferredLocale.clone();
+			sortedLanguages.clear();
+			populateTranslationsStatistics();
+			for (String tag : UMS_BCP47_CODES) {
+				LanguageEntry entry = new LanguageEntry();
+				entry.tag = tag;
+				entry.name = Messages.getString("Language." + tag, preferredLocale);
+				if (!entry.name.equals(Messages.getRootString("Language." + tag))) {
+					entry.name += " (" + Messages.getRootString("Language." + tag) + ")";
+				}
+				entry.locale = Locale.forLanguageTag(tag);
+				TranslationStatistics stats = translationsStatistics.get(tag);
+				if (stats != null) {
+					entry.coveragePercent = stats.translated;
+				} else {
+					entry.coveragePercent = 0;
+					LOGGER.debug("Warning: Could not find language statistics for {}", entry.name);
+				}
+			}
+		}
+		}
 	}
 
 	public static String[] getLanguageTags() {

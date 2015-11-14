@@ -1190,6 +1190,10 @@ public class PMS {
 			// Write buffered messages to the log now that logger is configured
 			CacheLogger.stopAndFlush();
 
+			//TODO Temp test
+			//Languages.populateLanguageStats();
+			//
+
 			LOGGER.debug(new Date().toString());
 
 			try {
